@@ -1,8 +1,10 @@
 // Superpaint — draw over anything.
 //
 // ⌘⌥P turns the whole desktop into a canvas (every screen); esc hides it and
-// gives clicks back. Hidden ≠ lost: ink stays until cleared. No dock icon,
-// no focus stealing — a status-bar pencil and the hotkey are the whole UI.
+// gives clicks back. Hidden ≠ lost: ink stays until cleared. ⌘⌥B (or b, or
+// the hand button) browses: the ink stays up but clicks and scrolling pass
+// through to the apps underneath. No dock icon, no focus stealing — a
+// status-bar pencil and the hotkeys are the whole UI.
 
 import Cocoa
 import Carbon.HIToolbox
@@ -20,14 +22,18 @@ final class Controller {
     private let toolbarPanel = ToolbarPanel()
     private lazy var toolbarView = makeToolbar()
     private var isActive = false
-    private let hotkey = HotKey()
+    private var isBrowsing = false
+    private let hotkeys = HotKeys()
 
     func start() {
         state.onChange = { [weak self] in self?.syncToolbar() }
         toolbarPanel.contentView = toolbarView
 
-        hotkey.install(key: kVK_ANSI_P, mods: UInt32(cmdKey | optionKey)) { [weak self] in
+        hotkeys.add(key: kVK_ANSI_P, mods: UInt32(cmdKey | optionKey)) { [weak self] in
             self?.toggle()
+        }
+        hotkeys.add(key: kVK_ANSI_B, mods: UInt32(cmdKey | optionKey)) { [weak self] in
+            self?.toggleBrowse()
         }
 
         NotificationCenter.default.addObserver(
@@ -68,10 +74,11 @@ final class Controller {
             let canvas = CanvasView(model: model, state: state)
             canvas.controller = self
             canvas.isActive = isActive
+            canvas.isBrowsing = isBrowsing
             let panel = DrawPanel(screen: s)
             panel.contentView = canvas
             if isActive {
-                panel.ignoresMouseEvents = false
+                panel.ignoresMouseEvents = isBrowsing
                 panel.orderFrontRegardless()
             }
             screens[id] = Screen(panel: panel, canvas: canvas)
@@ -96,23 +103,66 @@ final class Controller {
 
     func deactivate() {
         isActive = false
+        isBrowsing = false
+        toolbarView.setBrowsing(false)
         for screen in screens.values {
             screen.canvas.commitPendingText()
             screen.canvas.isActive = false
+            screen.canvas.isBrowsing = false
             screen.panel.ignoresMouseEvents = true
             screen.panel.orderOut(nil)
         }
         toolbarPanel.orderOut(nil)
     }
 
+    // --- browse mode ---
+
+    /// Browse mode: the canvas steps out of the mouse's way — scrolling,
+    /// clicks and drags reach the apps underneath. The toolbar stays live and
+    /// the ink stays visible; b, ⌘⌥B or the hand button returns to drawing.
+    func toggleBrowse() { isBrowsing ? exitBrowse() : enterBrowse() }
+
+    private func enterBrowse() {
+        guard isActive, !isBrowsing else { return }
+        isBrowsing = true
+        for screen in screens.values {
+            screen.canvas.commitPendingText()
+            screen.canvas.isBrowsing = true
+            screen.panel.ignoresMouseEvents = true
+        }
+        toolbarView.setBrowsing(true)
+    }
+
+    private func exitBrowse() {
+        guard isBrowsing else { return }
+        isBrowsing = false
+        for screen in screens.values {
+            screen.canvas.isBrowsing = false
+            screen.panel.ignoresMouseEvents = false
+        }
+        toolbarView.setBrowsing(false)
+        let keyScreen = mouseScreen ?? NSScreen.screens.first
+        if let keyScreen, let screen = screens[displayID(keyScreen)] {
+            screen.panel.makeKeyAndOrderFront(nil)   // tool shortcuts land here again
+        }
+    }
+
+    /// An explicit tool pick always ends browse mode.
+    func pick(_ tool: Tool) {
+        exitBrowse()
+        state.tool = tool
+    }
+
     // --- toolbar ---
 
     private func makeToolbar() -> ToolbarView {
         ToolbarView(state: state,
+                    pick: { self.pick($0) },
                     undo: { self.targetCanvas()?.model.undo() },
                     redo: { self.targetCanvas()?.model.redo() },
                     clear: { self.targetCanvas()?.model.clearAll() },
-                    hide: { self.deactivate() })
+                    hide: { self.deactivate() },
+                    browse: { self.toggleBrowse() })
     }
 
     /// The canvas the toolbar acts on: the screen it sits on, else the mouse's.
@@ -160,6 +210,10 @@ final class Controller {
         toggle.keyEquivalentModifierMask = [.command, .option]
         toggle.target = self
         menu.addItem(toggle)
+        let browse = NSMenuItem(title: "Browse Mode", action: #selector(browseAction), keyEquivalent: "b")
+        browse.keyEquivalentModifierMask = [.command, .option]
+        browse.target = self
+        menu.addItem(browse)
         let clear = NSMenuItem(title: "Clear This Screen", action: #selector(clearAction), keyEquivalent: "")
         clear.target = self
         menu.addItem(clear)
@@ -170,27 +224,43 @@ final class Controller {
 
     @objc private func toggleAction() { toggle() }
 
+    @objc private func browseAction() { toggleBrowse() }
+
     @objc private func clearAction() {
         let target = isActive ? targetCanvas() : canvas(on: mouseScreen)
         target?.model.clearAll()
     }
 }
 
-/// Global ⌘⌥P via Carbon hotkeys — no Accessibility permission needed.
-final class HotKey {
-    private var ref: EventHotKeyRef?
-    private var handler: (() -> Void)?
+/// Global hotkeys via Carbon — no Accessibility permission needed.
+final class HotKeys {
+    private var handlers: [UInt32: () -> Void] = [:]
+    private var refs: [EventHotKeyRef?] = []
+    private var nextID: UInt32 = 1
+    private let signature = OSType(0x5370_6170)   // 'Spap'
 
-    func install(key: Int, mods: UInt32, handler: @escaping () -> Void) {
-        self.handler = handler
+    init() {
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         let ctx = Unmanaged.passRetained(self).toOpaque()
-        InstallEventHandler(GetApplicationEventTarget(), { _, _, userData in
-            Unmanaged<HotKey>.fromOpaque(userData!).takeUnretainedValue().handler?()
+        InstallEventHandler(GetApplicationEventTarget(), { _, event, userData in
+            var id = EventHotKeyID()
+            guard GetEventParameter(event, EventParamName(kEventParamDirectObject),
+                                    EventParamType(typeEventHotKeyID), nil,
+                                    MemoryLayout<EventHotKeyID>.size, nil, &id) == noErr else { return noErr }
+            Unmanaged<HotKeys>.fromOpaque(userData!).takeUnretainedValue().handlers[id.id]?()
             return noErr
         }, 1, &spec, ctx, nil)
-        let id = EventHotKeyID(signature: OSType(0x5370_6170) /* 'Spap' */, id: 1)
-        RegisterEventHotKey(UInt32(key), mods, id, GetApplicationEventTarget(), 0, &ref)
+    }
+
+    func add(key: Int, mods: UInt32, handler: @escaping () -> Void) {
+        let id = nextID
+        nextID += 1
+        handlers[id] = handler
+        var ref: EventHotKeyRef?   // Carbon returns paramErr (-50) for a nil out-pointer
+        let status = RegisterEventHotKey(UInt32(key), mods, EventHotKeyID(signature: signature, id: id),
+                                         GetApplicationEventTarget(), 0, &ref)
+        precondition(status == noErr, "RegisterEventHotKey failed: \(status)")
+        refs.append(ref)   // refs live for the process lifetime; hotkeys are never unregistered
     }
 }
 

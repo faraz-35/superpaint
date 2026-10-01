@@ -306,6 +306,7 @@ final class CanvasView: NSView {
     weak var controller: Controller?
 
     var isActive = false { didSet { needsDisplay = true } }
+    var isBrowsing = false { didSet { needsDisplay = true } }
     private var live: CanvasItem?
     /// Text being typed: captured directly in keyDown and rendered in draw(),
     /// so no NSTextField/field editor exists to paint its own background.
@@ -345,7 +346,10 @@ final class CanvasView: NSView {
         }
 
         if isActive, model.items.isEmpty, live == nil, pendingText == nil {
-            let hint = NSAttributedString(string: "draw anywhere  ·  esc to hide  ·  ⌘⌥P toggles", attributes: [
+            let text = isBrowsing
+                ? "browsing — clicks and scrolling go to the page  ·  b or ⌘⌥B draws again"
+                : "draw anywhere  ·  esc to hide  ·  ⌘⌥P toggles"
+            let hint = NSAttributedString(string: text, attributes: [
                 .font: NSFont.systemFont(ofSize: 13),
                 .foregroundColor: NSColor(srgbRed: 0x5c / 255, green: 0x60 / 255, blue: 0x68 / 255, alpha: 1),
             ])
@@ -499,14 +503,15 @@ final class CanvasView: NSView {
         guard !cmd else { return super.keyDown(with: event) }
 
         switch key {
-        case "p": state.tool = .pen
-        case "h": state.tool = .highlighter
-        case "l": state.tool = .line
-        case "a": state.tool = .arrow
-        case "r": state.tool = .rect
-        case "o": state.tool = .ellipse
-        case "t": state.tool = .text
-        case "e": state.tool = .eraser
+        case "p": controller?.pick(.pen)
+        case "h": controller?.pick(.highlighter)
+        case "l": controller?.pick(.line)
+        case "a": controller?.pick(.arrow)
+        case "r": controller?.pick(.rect)
+        case "o": controller?.pick(.ellipse)
+        case "t": controller?.pick(.text)
+        case "e": controller?.pick(.eraser)
+        case "b": controller?.toggleBrowse()
         case "c": state.cycleColor()
         case "1", "2", "3": state.sizeIndex = Int(key)! - 1
         default: break

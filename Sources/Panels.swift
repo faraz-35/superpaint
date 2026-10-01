@@ -41,7 +41,7 @@ final class ToolbarPanel: NSPanel {
         // first stroke — toolbar clicks then landed as strokes. A higher
         // level can't lose.
         level = .statusBar + 1
-        hasShadow = false
+        hasShadow = true         // lifts the pill off bright pages so the border doesn't do it alone
         isOpaque = false
         backgroundColor = .clear
         isReleasedWhenClosed = false

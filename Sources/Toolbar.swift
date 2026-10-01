@@ -1,14 +1,14 @@
 // Toolbar — one floating pill on the active screen, bottom-center.
 // It hops to whichever screen the mouse is on. Buttons are hand-drawn views:
-// dark pill, gray icons, the accent only on the selected tool/swatch.
+// dark pill, light icons, the accent only on the selected tool/swatch.
 
 import Cocoa
 
 let BG = NSColor(srgbRed: 0x16 / 255, green: 0x18 / 255, blue: 0x1c / 255, alpha: 0.97)   // 16181c
-let BORDER = NSColor(srgbRed: 0x23 / 255, green: 0x26 / 255, blue: 0x2d / 255, alpha: 1)  // 23262d
-let ICON = NSColor(srgbRed: 0x8a / 255, green: 0x8f / 255, blue: 0x98 / 255, alpha: 1)    // 8a8f98
+let BORDER = NSColor(srgbRed: 0x30 / 255, green: 0x35 / 255, blue: 0x40 / 255, alpha: 1)  // 303540
+let ICON = NSColor(srgbRed: 0xb8 / 255, green: 0xbd / 255, blue: 0xc7 / 255, alpha: 1)    // b8bdc7
 let ACCENT = NSColor(srgbRed: 0x7b / 255, green: 0x8c / 255, blue: 0xff / 255, alpha: 1)  // 7b8cff
-let HOVER = NSColor(srgbRed: 0x1c / 255, green: 0x1f / 255, blue: 0x24 / 255, alpha: 1)   // 1c1f24
+let HOVER = NSColor(srgbRed: 0x26 / 255, green: 0x2b / 255, blue: 0x33 / 255, alpha: 1)   // 262b33
 
 func tintedSymbol(_ name: String, _ color: NSColor, point: CGFloat) -> NSImage {
     let base = NSImage(systemSymbolName: name, accessibilityDescription: nil)!
@@ -131,7 +131,10 @@ final class SizeButton: NSView {
 }
 
 final class ToolbarView: NSView {
+    private let state: AnnotationState
+    private var browsing = false
     private var toolButtons: [Tool: IconButton] = [:]
+    private var browseButton: IconButton!
     private var swatches: [SwatchButton] = []
     private var sizeButtons: [SizeButton] = []
     private var undoButton: IconButton!
@@ -144,16 +147,23 @@ final class ToolbarView: NSView {
     static let width: CGFloat = layoutWidth()
 
     init(state: AnnotationState,
+         pick: @escaping (Tool) -> Void,
          undo: @escaping () -> Void, redo: @escaping () -> Void,
-         clear: @escaping () -> Void, hide: @escaping () -> Void) {
+         clear: @escaping () -> Void, hide: @escaping () -> Void,
+         browse: @escaping () -> Void) {
+        self.state = state
         super.init(frame: NSRect(x: 0, y: 0, width: Self.width, height: Self.height))
 
         for tool in Tool.allCases {
             let b = IconButton(symbol: tool.symbol, tooltip: tool.label, selected: state.tool == tool)
-            b.action = { state.tool = tool }
+            b.action = { pick(tool) }   // a tool pick always ends browse mode
             toolButtons[tool] = b
             addSubview(b)
         }
+        browseButton = IconButton(symbol: "hand.draw",
+                                  tooltip: "Browse (b) — clicks and scrolling pass through to apps")
+        browseButton.action = browse
+        addSubview(browseButton)
         for (i, color) in InkColors.enumerated() {
             let s = SwatchButton(color: color)
             s.isSelected = state.colorIndex == i
@@ -186,12 +196,22 @@ final class ToolbarView: NSView {
     required init?(coder: NSCoder) { fatalError("no coder path") }
 
     private static func layoutWidth() -> CGFloat {
-        let n = Tool.allCases.count
-        return 10 + CGFloat(n) * 30 + 3 * 13          // tools + 3 separators
+        let slots = Tool.allCases.count + 1          // tools + browse
+        return 10 + CGFloat(slots) * 30 + 3 * 13     // slots + 3 separators
             + CGFloat(InkColors.count) * 22 + CGFloat(InkSizes.count) * 22
             + 4 * 30 + 9
     }
 
+    /// The dark pill behind every button — the reason icons stay readable
+    /// over a bright page.
+    override func draw(_ dirtyRect: NSRect) {
+        let pill = NSBezierPath(roundedRect: bounds, xRadius: bounds.height / 2, yRadius: bounds.height / 2)
+        BG.setFill()
+        pill.fill()
+        BORDER.setStroke()
+        pill.lineWidth = 1
+        pill.stroke()
+    }
 
     private func layoutButtons() {
         var x: CGFloat = 10
@@ -199,6 +219,8 @@ final class ToolbarView: NSView {
             toolButtons[tool]!.frame.origin = NSPoint(x: x, y: 7)
             x += 30
         }
+        browseButton.frame.origin = NSPoint(x: x, y: 7)
+        x += 30
         x = separator(at: x)
         for s in swatches { s.frame.origin = NSPoint(x: x, y: 7); x += 22 }
         x = separator(at: x)
@@ -215,9 +237,16 @@ final class ToolbarView: NSView {
     }
 
     func sync(state: AnnotationState) {
-        for (tool, b) in toolButtons { b.isSelected = state.tool == tool }
+        for (tool, b) in toolButtons { b.isSelected = !browsing && state.tool == tool }
         for (i, s) in swatches.enumerated() { s.isSelected = state.colorIndex == i }
         for (i, s) in sizeButtons.enumerated() { s.isSelected = state.sizeIndex == i }
+    }
+
+    /// Browse mode replaces tool selection as the highlighted state.
+    func setBrowsing(_ on: Bool) {
+        browsing = on
+        browseButton.isSelected = on
+        sync(state: state)
     }
 
     /// Reflect a canvas's undo stacks (buttons dim when empty).

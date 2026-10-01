@@ -16,8 +16,11 @@ analytics.
 - **esc** — hide and give clicks back to your apps.
 - Draw with the mouse. Your ink is kept while hidden until you clear it.
 
-While the canvas is up, clicks and keys go to it — that's canvas mode. Everything
-underneath stays untouched.
+While the canvas is up, clicks and keys go to it — that's canvas mode. Press
+**b** (or **⌘⌥B**, or the hand button) for browse mode: the ink stays on
+screen, but scrolling and clicks pass through to your apps. Scroll the page,
+click a link, then press **b** again to keep drawing. Picking any tool also
+returns you to drawing.
 
 ## Tools
 
@@ -33,6 +36,7 @@ The toolbar sits at the bottom of whichever screen your mouse is on.
 | `o` | ellipse — hold **shift** for a circle |
 | `t` | text — click where it should go, type, **enter** to keep it (**esc** discards) |
 | `e` | eraser — click or drag across any ink |
+| `b` | browse — clicks and scrolling pass through to apps; press again to draw |
 | `c` | cycle through 5 inks |
 | `1` `2` `3` | thin / medium / thick |
 | **⌘Z** / **⇧⌘Z** | undo / redo |
