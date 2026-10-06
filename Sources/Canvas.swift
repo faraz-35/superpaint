@@ -18,10 +18,11 @@ let InkColors: [NSColor] = [
 let InkSizes: [(stroke: CGFloat, text: CGFloat)] = [(2.5, 16), (4.5, 22), (7, 30)]
 
 enum Tool: String, CaseIterable {
-    case pen, highlighter, line, arrow, rect, ellipse, text, eraser
+    case select, pen, highlighter, line, arrow, rect, ellipse, text, eraser
 
     var symbol: String {
         switch self {
+        case .select: return "rectangle.dashed"
         case .pen: return "pencil.tip"
         case .highlighter: return "highlighter"
         case .line: return "line.diagonal"
@@ -35,6 +36,7 @@ enum Tool: String, CaseIterable {
 
     var label: String {
         switch self {
+        case .select: return "Select (v) — drag a box, drag inside it to move, ⌘C/⌘V, ⌫"
         case .pen: return "Pen (p)"
         case .highlighter: return "Highlighter (h)"
         case .line: return "Line (l, shift = 45°)"
@@ -66,6 +68,7 @@ final class AnnotationState {
 // --- items ---
 
 struct StrokeItem {
+    var id = UUID()   // stable across moves — selection and undo key off this, not indices
     var color: NSColor
     var width: CGFloat
     var alpha: CGFloat          // highlighter < 1
@@ -75,6 +78,7 @@ struct StrokeItem {
 enum ShapeKind: String { case line, arrow, rect, ellipse }
 
 struct ShapeItem {
+    var id = UUID()
     var kind: ShapeKind
     var color: NSColor
     var width: CGFloat
@@ -83,6 +87,7 @@ struct ShapeItem {
 }
 
 struct TextItem {
+    var id = UUID()
     var at: NSPoint             // top-left
     var string: String
     var color: NSColor
@@ -165,6 +170,38 @@ enum CanvasItem {
             }
         case .text:
             return bounds().contains(p)
+        }
+    }
+
+    var id: UUID {
+        switch self {
+        case .stroke(let s): return s.id
+        case .shape(let s): return s.id
+        case .text(let t): return t.id
+        }
+    }
+
+    /// A copy with a fresh identity — pasted/duplicated ink stays independent.
+    func reID() -> CanvasItem {
+        switch self {
+        case .stroke(var s): s.id = UUID(); return .stroke(s)
+        case .shape(var s): s.id = UUID(); return .shape(s)
+        case .text(var t): t.id = UUID(); return .text(t)
+        }
+    }
+
+    func translated(_ d: CGVector) -> CanvasItem {
+        switch self {
+        case .stroke(var s):
+            s.points = s.points.map { NSPoint(x: $0.x + d.dx, y: $0.y + d.dy) }
+            return .stroke(s)
+        case .shape(var s):
+            s.from = NSPoint(x: s.from.x + d.dx, y: s.from.y + d.dy)
+            s.to = NSPoint(x: s.to.x + d.dx, y: s.to.y + d.dy)
+            return .shape(s)
+        case .text(var t):
+            t.at = NSPoint(x: t.at.x + d.dx, y: t.at.y + d.dy)
+            return .text(t)
         }
     }
 }
@@ -283,6 +320,86 @@ final class CanvasModel {
                revert: { self.items = old })
     }
 
+    // --- selection ---
+    // Selected ids, not indices: undo/redo and delete reorder items freely.
+
+    private(set) var selection = Set<UUID>() { didSet { onChange() } }
+
+    /// Marquee result: everything intersecting the rect, replacing the selection.
+    func select(in rect: NSRect) {
+        selection = Set(items.filter { $0.bounds().intersects(rect) }.map(\.id))
+    }
+
+    /// A click picks the topmost item under it — or clears, on empty canvas.
+    func selectTopmost(at p: NSPoint) {
+        selection = items.last { $0.hit(p, t: 4) }.map { Set([$0.id]) } ?? []
+    }
+
+    func clearSelection() {
+        selection = []
+    }
+
+    func selectedItems() -> [CanvasItem] {
+        items.filter { selection.contains($0.id) }
+    }
+
+    /// Union of the selected ink's bounds; nil when the selection is empty.
+    func selectionBounds() -> NSRect? {
+        let sel = selectedItems()
+        guard let first = sel.first else { return nil }
+        var r = first.bounds()
+        for i in sel.dropFirst() { r = r.union(i.bounds()) }
+        return r
+    }
+
+    /// One undo step per drag, however long: the view shows the move live and
+    /// commits it here on mouse-up.
+    func translateSelection(by d: CGVector) {
+        let ids = selection
+        guard !ids.isEmpty else { return }
+        record(apply: { self.translate(ids: ids, by: d) },
+               revert: { self.translate(ids: ids, by: CGVector(dx: -d.dx, dy: -d.dy)) })
+    }
+
+    private func translate(ids: Set<UUID>, by d: CGVector) {
+        items = items.map { ids.contains($0.id) ? $0.translated(d) : $0 }
+    }
+
+    func deleteSelected() {
+        let removed = items.enumerated().filter { selection.contains($0.element.id) }
+        let ids = selection
+        guard !removed.isEmpty else { return }
+        record(apply: {
+                self.items.removeAll { ids.contains($0.id) }
+                self.selection = []
+               },
+               revert: {   // ascending order puts every item back where it was
+                for (i, item) in removed { self.items.insert(item, at: i) }
+                self.selection = ids
+               })
+    }
+
+    /// Paste copies (fresh ids) with their bounds' origin at `dest`; the pasted
+    /// set becomes the selection. Returns the new ids.
+    @discardableResult
+    func paste(_ clipboard: [CanvasItem], at dest: NSPoint) -> Set<UUID> {
+        let copies = clipboard.map { $0.reID() }
+        guard let first = copies.first else { return [] }
+        var b = first.bounds()
+        for i in copies.dropFirst() { b = b.union(i.bounds()) }
+        let placed = copies.map { $0.translated(CGVector(dx: dest.x - b.minX, dy: dest.y - b.minY)) }
+        let ids = Set(placed.map(\.id))
+        record(apply: {
+                self.items.append(contentsOf: placed)
+                self.selection = ids
+               },
+               revert: {
+                self.items.removeAll { ids.contains($0.id) }
+                self.selection = []
+               })
+        return ids
+    }
+
     func undo() {
         guard let change = undoStack.popLast() else { return }
         change.revert()
@@ -298,6 +415,24 @@ final class CanvasModel {
     }
 }
 
+// --- the ink clipboard ---
+// Copy on one screen, paste on any. Coordinates stay source-screen-local; the
+// pasting canvas repositions if they'd land outside it.
+
+final class InkClipboard {
+    static let shared = InkClipboard()
+    private(set) var items: [CanvasItem] = []
+    private(set) var bounds: NSRect = .zero
+
+    func copy(_ items: [CanvasItem]) {
+        guard let first = items.first else { return }
+        self.items = items
+        var b = first.bounds()
+        for i in items.dropFirst() { b = b.union(i.bounds()) }
+        bounds = b
+    }
+}
+
 // --- the per-screen surface ---
 
 final class CanvasView: NSView {
@@ -307,6 +442,11 @@ final class CanvasView: NSView {
 
     var isActive = false { didSet { needsDisplay = true } }
     var isBrowsing = false { didSet { needsDisplay = true } }
+    // Select tool: the box being dragged, and a move-in-progress (offset shown
+    // live, committed to the model as one undo step on mouse-up).
+    private var marquee: (anchor: NSPoint, current: NSPoint)?
+    private var moveOrigin: NSPoint?
+    private var dragDelta = CGVector(dx: 0, dy: 0)
     private var live: CanvasItem?
     /// Text being typed: captured directly in keyDown and rendered in draw(),
     /// so no NSTextField/field editor exists to paint its own background.
@@ -334,7 +474,18 @@ final class CanvasView: NSView {
     // --- drawing ---
 
     override func draw(_ dirtyRect: NSRect) {
-        for item in model.items { item.draw() }
+        for item in model.items {
+            if model.selection.contains(item.id), dragDelta.dx != 0 || dragDelta.dy != 0 {
+                NSGraphicsContext.current?.saveGraphicsState()
+                let xform = NSAffineTransform()
+                xform.translateX(by: dragDelta.dx, yBy: dragDelta.dy)
+                xform.concat()
+                item.draw()
+                NSGraphicsContext.current?.restoreGraphicsState()
+            } else {
+                item.draw()
+            }
+        }
         live?.draw()
 
         if let t = pendingText {
@@ -356,6 +507,25 @@ final class CanvasView: NSView {
             let size = hint.size()
             hint.draw(at: NSPoint(x: (bounds.width - size.width) / 2, y: bounds.height - 84))
         }
+
+        if state.tool == .select {
+            if let sb = model.selectionBounds() {
+                drawMarchingAnts(sb.offsetBy(dx: dragDelta.dx, dy: dragDelta.dy).insetBy(dx: -3, dy: -3))
+            }
+            if let m = marquee { drawMarchingAnts(NSRect(points: [m.anchor, m.current])) }
+        }
+    }
+
+    /// The selection's visual: faint accent fill, dashed accent border.
+    private func drawMarchingAnts(_ r: NSRect) {
+        guard r.width > 0 || r.height > 0 else { return }
+        ACCENT.withAlphaComponent(0.07).setFill()
+        r.fill()
+        let path = NSBezierPath(roundedRect: r, xRadius: 4, yRadius: 4)
+        ACCENT.setStroke()
+        path.lineWidth = 1.2
+        path.setLineDash([5, 3], count: 2, phase: 0)
+        path.stroke()
     }
 
     // --- input ---
@@ -383,6 +553,12 @@ final class CanvasView: NSView {
             beginText(at: p)
         case .eraser:
             model.erase(at: p)
+        case .select:
+            if let sb = model.selectionBounds(), sb.insetBy(dx: -6, dy: -6).contains(p) {
+                moveOrigin = p   // grab inside the selection = move it
+            } else {
+                marquee = (p, p)
+            }
         }
         needsDisplay = true
     }
@@ -393,6 +569,17 @@ final class CanvasView: NSView {
 
     override func mouseDragged(with event: NSEvent) {
         let p = point(event)
+        if let origin = moveOrigin {
+            dragDelta = CGVector(dx: p.x - origin.x, dy: p.y - origin.y)
+            needsDisplay = true
+            return
+        }
+        if var m = marquee {
+            m.current = p
+            marquee = m
+            needsDisplay = true
+            return
+        }
         let shift = event.modifierFlags.contains(.shift)
         switch live {
         case .stroke(var s):
@@ -415,6 +602,8 @@ final class CanvasView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        let p = point(event)
+        if state.tool == .select { finishSelect(at: p); needsDisplay = true; return }
         guard let item = live else { return }
         live = nil
         switch item {
@@ -441,6 +630,46 @@ final class CanvasView: NSView {
             let len = hypot(dx, dy)
             return NSPoint(x: from.x + len * cos(angle), y: from.y + len * sin(angle))
         }
+    }
+
+    // --- select tool ---
+    // Drag a box: everything intersecting it is selected. Drag inside the
+    // ants to move. ⌘C copies, ⌘V pastes a nudged, pre-selected copy, ⌫
+    // deletes, esc drops the selection (a second esc hides the canvas).
+
+    private func finishSelect(at p: NSPoint) {
+        if moveOrigin != nil {
+            moveOrigin = nil
+            if abs(dragDelta.dx) > 0.5 || abs(dragDelta.dy) > 0.5 {
+                model.translateSelection(by: dragDelta)
+            }
+            dragDelta = CGVector(dx: 0, dy: 0)
+            return
+        }
+        guard let m = marquee else { return }
+        marquee = nil
+        let r = NSRect(points: [m.anchor, m.current])
+        if r.width < 3, r.height < 3 {
+            model.selectTopmost(at: p)   // a plain click picks the one item under it
+        } else {
+            model.select(in: r)
+        }
+    }
+
+    private func copySelection() {
+        InkClipboard.shared.copy(model.selectedItems())
+    }
+
+    private func pasteFromClipboard() {
+        let clip = InkClipboard.shared
+        guard !clip.items.isEmpty else { return }
+        // Same-screen coordinates land a nudge from the original; a copy from
+        // a bigger/other screen centers itself instead of falling off-edge.
+        let b = clip.bounds
+        let dest = b.maxX <= bounds.width && b.maxY <= bounds.height
+            ? NSPoint(x: b.minX + 14, y: b.minY + 14)
+            : NSPoint(x: (bounds.width - b.width) / 2, y: (bounds.height - b.height) / 2)
+        model.paste(clip.items, at: dest)
     }
 
     // --- text tool ---
@@ -496,13 +725,20 @@ final class CanvasView: NSView {
             flags.contains(.shift) ? model.redo() : model.undo()
             return
         }
-        if key == "\u{1b}" {   // esc
-            controller?.deactivate()
+        if cmd, key == "c" { copySelection(); return }
+        if cmd, key == "v" { pasteFromClipboard(); return }
+        if key == "\u{1b}" {   // esc drops the selection first, then hides
+            model.selection.isEmpty ? controller?.deactivate() : model.clearSelection()
+            return
+        }
+        if !model.selection.isEmpty, key == "\u{7f}" || key == "\u{F728}" {
+            model.deleteSelected()
             return
         }
         guard !cmd else { return super.keyDown(with: event) }
 
         switch key {
+        case "v": controller?.pick(.select)
         case "p": controller?.pick(.pen)
         case "h": controller?.pick(.highlighter)
         case "l": controller?.pick(.line)

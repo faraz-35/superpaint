@@ -147,9 +147,11 @@ final class Controller {
         }
     }
 
-    /// An explicit tool pick always ends browse mode.
+    /// An explicit tool pick always ends browse mode; leaving select drops
+    /// the selection — the ants only mean something in select mode.
     func pick(_ tool: Tool) {
         exitBrowse()
+        if tool != .select { for s in screens.values { s.canvas.model.clearSelection() } }
         state.tool = tool
     }
 

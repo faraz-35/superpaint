@@ -28,6 +28,7 @@ The toolbar sits at the bottom of whichever screen your mouse is on.
 
 | key | tool |
 |-----|------|
+| `v` | select — drag a box around ink; drag inside the box to move it; **⌘C** copies, **⌘V** pastes, **⌫** deletes |
 | `p` | pen |
 | `h` | highlighter |
 | `l` | line — hold **shift** to snap to 45° steps |
@@ -43,6 +44,13 @@ The toolbar sits at the bottom of whichever screen your mouse is on.
 
 Pen + **shift** doubles as a ruler: a straight line from where the stroke
 started.
+
+With select, everything the box touches gets a dashed outline. A plain click
+picks the one item under it; **esc** drops the selection (press again to hide
+the canvas). Pasted ink appears a nudge away from the original and stays
+selected, so you can drag it straight to where you want it. Copy on one
+screen, paste on another works too — the copy centers itself if the new
+screen is smaller. Move, paste and delete are all one undo step each.
 
 A pencil sits in the menu bar with the same three actions: toggle, clear this
 screen, quit.
