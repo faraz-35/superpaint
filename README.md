@@ -1,11 +1,23 @@
-# Superpaint
+<div align="center">
 
-Draw over anything on your Mac.
+<img src="assets/banner.png" width="620" alt="Superpaint — draw over anything on your Mac" />
+
+**Draw over anything on your Mac.**
 
 Press one hotkey and your whole desktop becomes a canvas — every app, every
 screen. Made for explaining: sketch an algorithm over a LeetCode page while
 sharing your screen, circle a bug in a code review, underline a line in a
 PDF. Press the hotkey again and everything is back to normal.
+
+<a href="https://github.com/faraz-35/superpaint/releases/latest"><img src="https://img.shields.io/badge/macOS-native-7b8cff?style=for-the-badge&logo=apple&logoColor=white&labelColor=0e0f11" alt="macOS"></a>
+<img src="https://img.shields.io/badge/Swift-AppKit-7b8cff?style=for-the-badge&logo=swift&logoColor=white&labelColor=0e0f11" alt="Swift + AppKit">
+<img src="https://img.shields.io/badge/Network-none-7b8cff?style=for-the-badge&logo=shield&logoColor=white&labelColor=0e0f11" alt="No network">
+<a href="LICENSE"><img src="https://img.shields.io/github/license/faraz-35/superpaint?style=for-the-badge&labelColor=0e0f11&color=7b8cff" alt="MIT license"></a>
+<a href="https://github.com/faraz-35/superpaint/releases/latest"><img src="https://img.shields.io/github/v/release/faraz-35/superpaint?style=for-the-badge&labelColor=0e0f11&color=7b8cff" alt="Latest release"></a>
+
+[Website](https://getsuperpaint.vercel.app) · [Download for macOS](https://github.com/faraz-35/superpaint/releases/latest)
+
+</div>
 
 Native Swift + AppKit. One small binary. No dependencies, no network, no
 analytics.
